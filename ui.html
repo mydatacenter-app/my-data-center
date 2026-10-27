@@ -135,6 +135,7 @@ pre.log{background:#06090c;border:1px solid var(--line);border-radius:9px;paddin
 <!-- OVERVIEW -->
 <section class="page" id="p-overview">
   <div class="ph"><div><h1>Overview</h1><p id="ovSub">Your AI cluster at a glance</p></div></div>
+  <div id="problemBanner"></div>
   <div id="restartBanner"></div>
   <div class="grid g4">
     <div class="card tile"><div class="k">Computers</div><div class="v" id="tNodes">–</div><div class="s" id="tNodesS"></div></div>
@@ -307,6 +308,7 @@ function renderOverview(me,online,sharing){
   const pooled=me.ram_gb+sharing.reduce((a,p)=>a+p.ram_gb,0);$('tRam').textContent=gb(pooled);$('tRamS').textContent=`this computer + ${sharing.length} shared`;
   const tps=S.tps.map(t=>t.tps),last=tps[tps.length-1];$('tTps').textContent=last?last.toFixed(1):'–';
   $('tCl').innerHTML=`<span class="${cls}">${label}</span>`;$('tClS').textContent=c.nodes?`${c.nodes.length} computer${c.nodes.length>1?'s':''} working`:'Start one below';
+  setH($('problemBanner'),(S.problems||[]).map(t=>`<div class="banner" style="background:#2a1216;border-color:#5a2a31;color:#ffb3bb">⚠ ${esc(t).replace(/(https:\/\/\S+)/,'<a style="color:#ffd0d6" href="$1" target="_blank">$1</a>')}</div>`).join(''));
   setH($('restartBanner'),c.status!=='stopped'&&c.mode&&c.mode!==S.mode?`<div class="banner">⚡ Performance mode changed to ${esc(S.modes[S.mode].label)}. Restart the cluster to apply it to the model.<span class="grow"></span><button class="b" onclick="api('/api/cluster/restart')">Restart now</button></div>`:'');
   // charts
   $('meLive').textContent=S.has_psutil?`${me.cores} cores · ${Math.round(me.ram_gb)} GB`:'install psutil for live stats';

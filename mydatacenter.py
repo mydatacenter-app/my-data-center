@@ -438,15 +438,20 @@ def apply_priority(proc):
         pass
 
 
+PROBLEMS = {}  # process name -> plain-English error shown in the app
+
+
 class Proc:
     def __init__(self, name):
         self.name = name
         self.p = None
         self.log = collections.deque(maxlen=400)
         self.meta = {}
+        self.stopped = set()  # processes we stopped on purpose
 
     def start(self, args, meta=None):
         self.stop()
+        PROBLEMS.pop(self.name, None)
         self.meta = meta or {}
         self.log.append(f"$ {' '.join(args)}")
         self.p = subprocess.Popen(
@@ -459,13 +464,20 @@ class Proc:
     def _pump(self, p):
         for line in p.stdout:
             self.log.append(line.rstrip())
-        self.log.append(f"[{self.name} stopped, exit code {p.wait()}]")
+        code = p.wait()
+        self.log.append(f"[{self.name} stopped, exit code {code}]")
+        if os.name == "nt" and code in (3221225781, -1073741515):  # STATUS_DLL_NOT_FOUND
+            PROBLEMS[self.name] = ("This computer is missing the Microsoft Visual C++ Runtime. Install it from "
+                                   "https://aka.ms/vs/17/release/vc_redist.x64.exe then try again.")
+        elif code not in (0, None, -15, 1) and p.pid not in self.stopped:
+            PROBLEMS[self.name] = f"{self.name} stopped unexpectedly (code {code}). See Settings → Logs."
 
     def running(self):
         return self.p is not None and self.p.poll() is None
 
     def stop(self):
         if self.running():
+            self.stopped.add(self.p.pid)
             self.p.terminate()
             try:
                 self.p.wait(5)
@@ -875,7 +887,7 @@ def full_state():
         "downloads": downloads, "presets": PRESETS, "hist": hist, "tps": tps,
         "modes": MODES, "mode": CONFIG["mode"], "threads": mode_threads(), "has_psutil": bool(psutil),
         "cluster": {"status": llama_health(), **{k: v for k, v in LLAMA.meta.items()}},
-        "manual_peers": CONFIG.get("manual_peers", []), "home": str(HOME), "app_version": VERSION, "update": dict(UPDATE), "frozen": FROZEN,
+        "manual_peers": CONFIG.get("manual_peers", []), "home": str(HOME), "app_version": VERSION, "problems": list(PROBLEMS.values()), "update": dict(UPDATE), "frozen": FROZEN,
         "logs": {"rpc": list(RPC.log)[-80:], "llama": list(LLAMA.log)[-80:]},
     }
 
