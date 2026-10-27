@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -32,6 +33,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 try:
+    import certifi
+except ImportError:
+    certifi = None
+
+try:
     import psutil
 except ImportError:  # app still works, just without live CPU/RAM graphs
     psutil = None
@@ -44,6 +50,21 @@ RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_pag
 UPDATE_REPO = "mydatacenter-app/my-data-center"
 ENGINE_TAG = ""  # set at build time to a llama.cpp release that has files for Windows and Mac
 UA = {"User-Agent": f"MyDataCenter/{VERSION}"}
+
+
+def make_ssl_context():
+    """Trust a bundled certificate list plus the computer's own. Fresh Windows installs often
+    haven't downloaded the root certificates GitHub uses yet, which breaks downloads otherwise."""
+    ctx = ssl.create_default_context()
+    if certifi:
+        try:
+            ctx.load_verify_locations(cafile=certifi.where())
+        except Exception:
+            pass
+    return ctx
+
+
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.HTTPSHandler(context=make_ssl_context())))
 
 PRESETS = [
     {"name": "Llama 3.2 3B", "note": "Small and fast. Runs on one laptop.", "gb": 2.0,
