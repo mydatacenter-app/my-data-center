@@ -235,6 +235,17 @@ ENGINE_META = ENGINE_DIR / "engine.json"
 EXE = ".exe" if os.name == "nt" else ""
 
 
+RPC_NAMES = ("ggml-rpc-server", "rpc-server")  # llama.cpp renamed it; accept both
+
+
+def rpc_exe(bin_dir):
+    for n in RPC_NAMES:
+        p = Path(bin_dir) / f"{n}{EXE}"
+        if p.exists():
+            return p
+    return None
+
+
 def refresh_engine():
     with LOCK:
         if ENGINE["state"] == "installing":
@@ -242,7 +253,7 @@ def refresh_engine():
         meta = load_json(ENGINE_META, None)
         if meta:
             b = Path(meta.get("bin", ""))
-            if (b / f"llama-server{EXE}").exists() and (b / f"rpc-server{EXE}").exists():
+            if (b / f"llama-server{EXE}").exists() and rpc_exe(b):
                 ENGINE.update(state="ready", version=meta["version"], bin=str(b), error="")
                 return
         if ENGINE["state"] != "error":
@@ -363,7 +374,7 @@ def install_engine():
         if not server:
             raise RuntimeError("llama-server not found in the download")
         bin_dir = server.parent
-        if not (bin_dir / f"rpc-server{EXE}").exists():
+        if not rpc_exe(bin_dir):
             raise RuntimeError("rpc-server not found in the download")
         if os.name != "nt":
             for p in bin_dir.iterdir():
@@ -451,7 +462,7 @@ def set_sharing(on):
     if on:
         if ENGINE["state"] != "ready":
             raise RuntimeError("Install the engine first (Settings → AI engine)")
-        exe = str(Path(ENGINE["bin"]) / f"rpc-server{EXE}")
+        exe = str(rpc_exe(ENGINE["bin"]))
         RPC.start([exe, "-H", "0.0.0.0", "-p", str(RPC_PORT), "-c", "-t", str(mode_threads())],
                   {"mode": CONFIG["mode"]})
     else:
