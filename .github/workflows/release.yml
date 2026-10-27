@@ -20,8 +20,22 @@ env:
   APP_VERSION: 0.2.${{ github.run_number }}
 
 jobs:
+  engine:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.engine_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        run: python3 installer/pick_engine.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   windows:
+    needs: engine
     runs-on: windows-latest
+    env:
+      ENGINE_TAG: ${{ needs.engine.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,6 +58,9 @@ jobs:
           path: dist/MyDataCenter-Setup.exe
 
   mac:
+    needs: engine
+    env:
+      ENGINE_TAG: ${{ needs.engine.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +97,7 @@ jobs:
           path: MyDataCenter-Mac-${{ matrix.arch }}.dmg
 
   release:
-    needs: [windows, mac]
+    needs: [engine, windows, mac]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -94,6 +111,8 @@ jobs:
           make_latest: true
           files: out/*
           body: |
+            AI engine: llama.cpp ${{ needs.engine.outputs.tag }}
+
             Download page: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
             - **Windows:** MyDataCenter-Setup.exe
             - **Mac (M1/M2/M3/M4):** MyDataCenter-Mac-AppleSilicon.dmg

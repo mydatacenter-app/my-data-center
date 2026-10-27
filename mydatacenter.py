@@ -37,7 +37,8 @@ VERSION = "0.2.0"
 APP_ID = "mydatacenter"
 DISCOVERY_PORT = 8801
 RPC_PORT = 50052
-RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15"
+ENGINE_TAG = ""  # set at build time to a llama.cpp release that has files for Windows and Mac
 UA = {"User-Agent": f"MyDataCenter/{VERSION}"}
 
 PRESETS = [
@@ -244,22 +245,56 @@ def refresh_engine():
             ENGINE.update(state="missing", version="", bin="")
 
 
-def pick_asset(assets):
+def wanted_suffixes():
+    """Release file endings for this computer, best first."""
     s, m = platform.system(), platform.machine().lower()
     arm = m in ("arm64", "aarch64")
     if s == "Darwin":
-        wants = ["bin-macos-arm64"] if arm else ["bin-macos-x64"]
-    elif s == "Windows":
+        return ["bin-macos-arm64.tar.gz", "bin-macos-arm64.zip"] if arm else ["bin-macos-x64.tar.gz", "bin-macos-x64.zip"]
+    if s == "Windows":
         # Vulkan build runs on NVIDIA, AMD and Intel GPUs with no extra installs; CPU build as fallback
-        wants = ["bin-win-vulkan-arm64", "bin-win-cpu-arm64"] if arm else ["bin-win-vulkan-x64", "bin-win-cpu-x64"]
-    else:
-        wants = ["bin-ubuntu-vulkan-arm64", "bin-ubuntu-arm64"] if arm else ["bin-ubuntu-vulkan-x64", "bin-ubuntu-x64"]
-    for w in wants:
+        a = "arm64" if arm else "x64"
+        return [f"bin-win-vulkan-{a}.zip", f"bin-win-cpu-{a}.zip"]
+    a = "arm64" if arm else "x64"
+    return [f"bin-ubuntu-vulkan-{a}.tar.gz", f"bin-ubuntu-{a}.tar.gz"]
+
+
+def pick_asset(assets):
+    for suffix in wanted_suffixes():
         for a in assets:
             n = a["name"]
-            if w in n and not n.startswith("cudart") and (n.endswith(".zip") or n.endswith(".tar.gz")):
+            if n.endswith(suffix) and not n.startswith("cudart"):
                 return a
     return None
+
+
+def url_exists(url):
+    try:  # ask for just the first byte; HEAD requests get refused by GitHub's download servers
+        with urllib.request.urlopen(urllib.request.Request(url, headers={**UA, "Range": "bytes=0-0"}), timeout=20) as r:
+            r.read(1)
+            return True
+    except Exception:
+        return False
+
+
+def find_engine_download():
+    """Returns (tag, file name, url). Uses the engine version this app was built with, so every
+    computer running the same app version gets the exact same engine."""
+    if ENGINE_TAG:
+        for suffix in wanted_suffixes():
+            name = f"llama-{ENGINE_TAG}-{suffix}"
+            url = f"https://github.com/ggml-org/llama.cpp/releases/download/{ENGINE_TAG}/{name}"
+            if url_exists(url):
+                return ENGINE_TAG, name, url
+    # development builds: newest recent release that has a file for this computer
+    req = urllib.request.Request(RELEASES_API, headers={**UA, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        releases = json.load(r)
+    for rel in releases:
+        asset = pick_asset(rel.get("assets", []))
+        if asset and not rel.get("draft"):
+            return rel["tag_name"], asset["name"], asset["browser_download_url"]
+    raise RuntimeError(f"No llama.cpp build found for {OS_NAME} {platform.machine()}. Check your internet connection and try again.")
 
 
 def download(url, dest, on_progress):
@@ -303,20 +338,14 @@ def install_engine():
             return
         ENGINE.update(state="installing", progress=0.0, error="")
     try:
-        req = urllib.request.Request(RELEASE_API, headers={**UA, "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            rel = json.load(r)
-        asset = pick_asset(rel.get("assets", []))
-        if not asset:
-            raise RuntimeError(f"No llama.cpp build found for {OS_NAME} {platform.machine()}")
-        tag = rel["tag_name"]
-        archive = DL_DIR / asset["name"]
+        tag, name, url = find_engine_download()
+        archive = DL_DIR / name
 
         def prog(done, total):
             with LOCK:
                 ENGINE["progress"] = done / total if total else 0.0
 
-        download(asset["browser_download_url"], archive, prog)
+        download(url, archive, prog)
         was_sharing = RPC.running()
         RPC.stop()
         LLAMA.stop()
@@ -465,7 +494,7 @@ def start_cluster(model, peer_ids, ctx):
                 raise RuntimeError(f"{p['name']} is not sharing. Turn on sharing on that computer.")
             if p.get("engine_version") != ENGINE["version"]:
                 raise RuntimeError(f"{p['name']} has engine {p.get('engine_version') or 'none'}, this computer has "
-                                   f"{ENGINE['version']}. Update the engine on both so they match.")
+                                   f"{ENGINE['version']}. Install the same My Data Center version on both so they match.")
             rpcs.append(f"{p['ip']}:{p.get('rpc_port', RPC_PORT)}")
             names.append(p["name"])
     exe = str(Path(ENGINE["bin"]) / f"llama-server{EXE}")

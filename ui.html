@@ -369,7 +369,7 @@ function renderSettings(me){
   $('modeInfo').textContent=`currently ${md[S.mode].label}`;
   if(document.activeElement!==$('nameIn'))$('nameIn').value=me.name;
   const e=S.engine;let h;
-  if(e.state==='ready')h=`<div class="row"><span class="led on"></span><b>Installed</b><span class="mono small muted">llama.cpp ${esc(e.version)}</span><span class="grow"></span><button class="b" onclick="api('/api/engine/install')">Check for update</button></div><div class="small faint" style="margin-top:8px">Every computer in a cluster needs the same version.</div>`;
+  if(e.state==='ready')h=`<div class="row"><span class="led on"></span><b>Installed</b><span class="mono small muted">llama.cpp ${esc(e.version)}</span><span class="grow"></span><button class="b" onclick="api('/api/engine/install')">Reinstall</button></div><div class="small faint" style="margin-top:8px">Every computer in a cluster needs the same app version so their engines match.</div>`;
   else if(e.state==='installing')h=`<div class="small">Downloading engine… ${pct(e.progress)}%</div><div class="bar" style="margin-top:8px"><i style="width:${pct(e.progress)}%"></i></div>`;
   else h=`<div class="row"><span class="grow small muted">One-time download (about 30–80 MB) of the llama.cpp engine.</span><button class="b pri" onclick="api('/api/engine/install')">Install engine</button></div>${e.error?`<div class="small err" style="margin-top:8px">${esc(e.error)}</div>`:''}`;
   setH($('engine'),h);$('homeDir').textContent=S.home;
