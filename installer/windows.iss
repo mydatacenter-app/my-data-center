@@ -39,6 +39,8 @@ Name: "{autodesktop}\My Data Center"; Filename: "{app}\My Data Center.exe"; Task
 
 [Run]
 Filename: "{app}\My Data Center.exe"; Description: "Open My Data Center now"; Flags: nowait postinstall skipifsilent
+; after an in-app update (silent install), reopen the app automatically
+Filename: "{app}\My Data Center.exe"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /t /im ""My Data Center.exe"""; Flags: runhidden; RunOnceId: "StopApp"

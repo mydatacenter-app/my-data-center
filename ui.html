@@ -31,6 +31,7 @@ aside{background:var(--side);border-right:1px solid var(--line);display:flex;fle
 .seg button.on[data-m=eco]{color:var(--acc)}.seg button.on[data-m=balanced]{color:var(--blue)}.seg button.on[data-m=max]{color:var(--warn)}
 .statusbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12px}
 .statusbox .row{gap:7px}
+.upd{background:#0f2a1e;border:1px solid var(--acc-d);border-radius:10px;padding:10px 12px;font-size:12px;cursor:pointer}.upd b{color:var(--acc);display:block;font-size:13px}.upd:hover{border-color:var(--acc)}
 /* main */
 main{overflow:auto;min-height:0}
 .page{display:none;padding:26px 30px 40px;max-width:1240px;margin:0 auto}.page.on{display:block}
@@ -123,6 +124,7 @@ pre.log{background:#06090c;border:1px solid var(--line);border-radius:9px;paddin
   <div class="nav" data-p="models"><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/></svg>Models</div>
   <div class="nav" data-p="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</div>
   <div class="side-bottom">
+    <div id="updBox"></div>
     <div class="side-label">Performance</div>
     <div class="seg" id="segMode"><button data-m="eco">Eco</button><button data-m="balanced">Bal</button><button data-m="max">Max</button></div>
     <div class="statusbox" id="sideStatus"></div>
@@ -211,6 +213,8 @@ pre.log{background:#06090c;border:1px solid var(--line);border-radius:9px;paddin
     <div class="card"><h3>AI engine</h3><div id="engine"></div></div>
   </div>
   <div class="sp"></div>
+  <div class="card"><h3>App updates</h3><div id="updates"></div></div>
+  <div class="sp"></div>
   <div class="card"><h3>Logs</h3>
     <div class="tabs"><button class="on" data-log="llama">Cluster</button><button data-log="rpc">Sharing</button></div>
     <pre class="log" id="logBox"></pre></div>
@@ -288,6 +292,8 @@ function render(){if(!S)return;const me=S.me,online=S.peers.filter(p=>p.online),
   $('ver').textContent='v'+S.app_version+' · '+me.name;$('navNodes').textContent=1+online.length;
   document.querySelectorAll('#segMode button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.mode));
   setH($('sideStatus'),`<div class="row"><span class="led ${led}"></span><b class="${cls}">${label}</b></div><div class="faint" style="margin-top:4px">${S.cluster.model?esc(S.cluster.model.replace(/\.gguf$/,'')):'No model loaded'}</div>`);
+  const u=S.update;
+  setH($('updBox'),u.state==='available'?`<div class="upd" onclick="go('settings')"><b>Update available</b>Version ${esc(u.latest)} · click to install</div>`:u.state==='downloading'||u.state==='installing'?`<div class="upd"><b>Updating…</b>${u.state==='installing'?'Reopening shortly':pct(u.progress)+'%'}</div>`:'');
   if(page==='overview')renderOverview(me,online,sharing);
   if(page==='chat')renderChatHeader();
   if(page==='computers')renderComputers(me,online);
@@ -373,9 +379,16 @@ function renderSettings(me){
   else if(e.state==='installing')h=`<div class="small">Downloading engine… ${pct(e.progress)}%</div><div class="bar" style="margin-top:8px"><i style="width:${pct(e.progress)}%"></i></div>`;
   else h=`<div class="row"><span class="grow small muted">One-time download (about 30–80 MB) of the llama.cpp engine.</span><button class="b pri" onclick="api('/api/engine/install')">Install engine</button></div>${e.error?`<div class="small err" style="margin-top:8px">${esc(e.error)}</div>`:''}`;
   setH($('engine'),h);$('homeDir').textContent=S.home;
+  const u=S.update;let uh;
+  if(u.state==='available')uh=`<div class="row"><span class="led on"></span><b class="ok">Version ${esc(u.latest)} is available</b><span class="small muted">you have ${esc(S.app_version)}</span><span class="grow"></span><button class="b pri" onclick="doUpdate()">Update now</button></div>${u.error?`<div class="small err" style="margin-top:8px">${esc(u.error)}</div>`:''}`;
+  else if(u.state==='downloading')uh=`<div class="small">Downloading version ${esc(u.latest)}… ${pct(u.progress)}%</div><div class="bar" style="margin-top:8px"><i style="width:${pct(u.progress)}%"></i></div>`;
+  else if(u.state==='installing')uh=`<div class="small warn">Installing — the app will close and reopen by itself.</div>`;
+  else uh=`<div class="row"><span class="grow small ${u.error?'err':'muted'}">${u.error?esc(u.error):u.state==='current'?`You're up to date (version ${esc(S.app_version)}).`:'Checks automatically every few hours.'}</span><button class="b" onclick="api('/api/update/check').then(j=>j.ok&&toast('Checked for updates'))">Check now</button></div>`;
+  setH($('updates'),uh+'<div class="small faint" style="margin-top:8px">Updating keeps your models, chats and settings. Update every computer so they stay on the same version.</div>');
   const lb=$('logBox'),atEnd=lb.scrollTop+lb.clientHeight>=lb.scrollHeight-6;lb.textContent=S.logs[logTab].join('\n')||'(nothing yet)';if(atEnd)lb.scrollTop=lb.scrollHeight;}
 
 /* ---------- actions ---------- */
+function doUpdate(){if(S.cluster.status!=='stopped'&&!confirm('Updating stops the running cluster. Continue?'))return;api('/api/update/install')}
 function tog(id){sel.has(id)?sel.delete(id):sel.add(id);store('sel',[...sel]);render()}
 async function setMode(m){if(S&&m===S.mode)return;const j=await api('/api/mode',{mode:m});if(j.ok)toast(`${S.modes[m].label} mode on${j.restart_needed?' — restart the cluster to apply':''}`,'ok')}
 function dl(url){url=(url||'').trim();if(!url)return;$('customUrl').value='';api('/api/model/download',{url}).then(j=>j.ok&&toast('Download started','ok'))}

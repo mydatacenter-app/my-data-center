@@ -13,11 +13,14 @@ import ctypes
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -38,6 +41,7 @@ APP_ID = "mydatacenter"
 DISCOVERY_PORT = 8801
 RPC_PORT = 50052
 RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15"
+UPDATE_REPO = "mydatacenter-app/my-data-center"
 ENGINE_TAG = ""  # set at build time to a llama.cpp release that has files for Windows and Mac
 UA = {"User-Agent": f"MyDataCenter/{VERSION}"}
 
@@ -506,6 +510,116 @@ def start_cluster(model, peer_ids, ctx):
                        "mode": CONFIG["mode"], "started": time.time()})
 
 
+# ----------------------------------------------------------------- updates --
+FROZEN = bool(getattr(sys, "frozen", False))
+UPDATE = {"state": "idle", "latest": "", "progress": 0.0, "error": "", "checked": 0}
+
+
+def vtuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
+def update_file_name():
+    if platform.system() == "Windows":
+        return "MyDataCenter-Setup.exe"
+    if platform.system() == "Darwin":
+        return "MyDataCenter-Mac-AppleSilicon.dmg" if platform.machine() == "arm64" else "MyDataCenter-Mac-Intel.dmg"
+    return None
+
+
+def check_update():
+    with LOCK:
+        if UPDATE["state"] in ("downloading", "installing"):
+            return
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                                     headers={**UA, "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rel = json.load(r)
+        latest = rel["tag_name"].lstrip("v")
+        want = update_file_name()
+        has_file = any(a["name"] == want for a in rel.get("assets", []))
+        with LOCK:
+            UPDATE.update(latest=latest, checked=time.time(), error="",
+                          state="available" if vtuple(latest) > vtuple(VERSION) and has_file else "current")
+    except Exception as e:
+        with LOCK:
+            UPDATE.update(state="idle", error=f"Couldn't check for updates: {e}", checked=time.time())
+
+
+def update_loop():
+    time.sleep(5)
+    while True:
+        check_update()
+        time.sleep(6 * 3600)
+
+
+def quit_soon():
+    """Stop everything and exit so the new version can take over."""
+    def go():
+        time.sleep(0.6)
+        LLAMA.stop()
+        RPC.stop()
+        os._exit(0)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def apply_update():
+    with LOCK:
+        if UPDATE["state"] != "available":
+            return
+        UPDATE.update(state="downloading", progress=0.0, error="")
+    try:
+        if not FROZEN:
+            raise RuntimeError("Updates only work in the installed app. Download the new version from the website.")
+        name = update_file_name()
+        url = f"https://github.com/{UPDATE_REPO}/releases/download/v{UPDATE['latest']}/{name}"
+        dest = DL_DIR / name
+
+        def prog(done, total):
+            with LOCK:
+                UPDATE["progress"] = done / total if total else 0.0
+
+        download(url, dest, prog)
+        with LOCK:
+            UPDATE["state"] = "installing"
+        if platform.system() == "Windows":
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen([str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], creationflags=flags, close_fds=True)
+            quit_soon()
+        else:
+            install_mac_update(dest)
+    except Exception as e:
+        with LOCK:
+            UPDATE.update(state="available", error=str(e))
+
+
+def install_mac_update(dmg):
+    app = Path(sys.executable).resolve().parents[2]  # .../My Data Center.app
+    if app.suffix != ".app":
+        raise RuntimeError("Couldn't find the app to update")
+    mnt = tempfile.mkdtemp(prefix="mdc-update-")
+    subprocess.run(["hdiutil", "attach", str(dmg), "-nobrowse", "-quiet", "-mountpoint", mnt], check=True)
+    try:
+        src = next(Path(mnt).glob("*.app"))
+        new = app.with_name(app.name + ".new")
+        shutil.rmtree(new, ignore_errors=True)
+        subprocess.run(["ditto", str(src), str(new)], check=True)
+    finally:
+        subprocess.run(["hdiutil", "detach", mnt, "-quiet"])
+    try:
+        old = app.with_name(app.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        app.rename(old)
+        new.rename(app)
+        shutil.rmtree(old, ignore_errors=True)
+    except PermissionError:
+        subprocess.Popen(["open", str(dmg)])
+        raise RuntimeError("No permission to replace the app. The new version is open: drag it into Applications.")
+    subprocess.Popen(["/bin/sh", "-c", f"sleep 2; open {shlex.quote(str(app))}"], start_new_session=True)
+    quit_soon()
+
+
 # ------------------------------------------------------------------ models --
 DOWNLOADS = {}
 
@@ -658,7 +772,7 @@ def full_state():
         "downloads": downloads, "presets": PRESETS, "hist": hist, "tps": tps,
         "modes": MODES, "mode": CONFIG["mode"], "threads": mode_threads(), "has_psutil": bool(psutil),
         "cluster": {"status": llama_health(), **{k: v for k, v in LLAMA.meta.items()}},
-        "manual_peers": CONFIG.get("manual_peers", []), "home": str(HOME), "app_version": VERSION,
+        "manual_peers": CONFIG.get("manual_peers", []), "home": str(HOME), "app_version": VERSION, "update": dict(UPDATE), "frozen": FROZEN,
         "logs": {"rpc": list(RPC.log)[-80:], "llama": list(LLAMA.log)[-80:]},
     }
 
@@ -750,6 +864,10 @@ class Handler(BaseHTTPRequestHandler):
                 save_chat(data)
             elif self.path == "/api/chats/delete":
                 delete_chat(data.get("id"))
+            elif self.path == "/api/update/check":
+                check_update()
+            elif self.path == "/api/update/install":
+                threading.Thread(target=apply_update, daemon=True).start()
             elif self.path == "/api/open-folder":
                 open_folder(HOME)
             elif self.path == "/api/chat":
@@ -825,7 +943,7 @@ def main():
         return
     server.daemon_threads = True
     refresh_engine()
-    for fn in (sampler_loop, announce_loop, listen_loop, manual_peer_loop):
+    for fn in (sampler_loop, announce_loop, listen_loop, manual_peer_loop, update_loop):
         threading.Thread(target=fn, daemon=True).start()
     if CONFIG.get("share_on_start") and ENGINE["state"] == "ready":
         try:
