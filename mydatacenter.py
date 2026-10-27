@@ -543,8 +543,11 @@ def start_cluster(model, peer_ids, ctx):
 
 
 # ----------------------------------------------------------------- updates --
+# Updates download quietly in the background. When one is ready the app shows
+# "Restart to update". Closing the app instead installs it on the next launch.
 FROZEN = bool(getattr(sys, "frozen", False))
 UPDATE = {"state": "idle", "latest": "", "progress": 0.0, "error": "", "checked": 0}
+PENDING_PATH = HOME / "pending_update.json"
 
 
 def vtuple(v):
@@ -559,71 +562,127 @@ def update_file_name():
     return None
 
 
+def read_pending():
+    """The update already downloaded and waiting to install, if any."""
+    p = load_json(PENDING_PATH, None)
+    if not p:
+        return None
+    f = Path(p.get("file", ""))
+    if vtuple(p.get("version", "0")) > vtuple(VERSION) and f.exists() and f.stat().st_size == p.get("size"):
+        return p
+    try:  # stale or already installed: clean up
+        PENDING_PATH.unlink(missing_ok=True)
+        if f.exists() and f.parent == DL_DIR:
+            f.unlink()
+    except OSError:
+        pass
+    return None
+
+
 def check_update():
     with LOCK:
         if UPDATE["state"] in ("downloading", "installing"):
             return
+    pending = read_pending()
     try:
         req = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
                                      headers={**UA, "Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=20) as r:
             rel = json.load(r)
         latest = rel["tag_name"].lstrip("v")
-        want = update_file_name()
-        has_file = any(a["name"] == want for a in rel.get("assets", []))
+        asset = next((a for a in rel.get("assets", []) if a["name"] == update_file_name()), None)
+        newer = vtuple(latest) > vtuple(VERSION) and asset is not None
         with LOCK:
-            UPDATE.update(latest=latest, checked=time.time(), error="",
-                          state="available" if vtuple(latest) > vtuple(VERSION) and has_file else "current")
+            UPDATE.update(latest=latest, checked=time.time(), error="")
+        if not newer:
+            with LOCK:
+                UPDATE["state"] = "current"
+            return
+        if pending and pending["version"] == latest:
+            with LOCK:
+                UPDATE["state"] = "ready"
+            return
+        if not FROZEN:  # running from source: just tell them
+            with LOCK:
+                UPDATE["state"] = "available"
+            return
+        threading.Thread(target=download_update, args=(latest, asset), daemon=True).start()
     except Exception as e:
         with LOCK:
-            UPDATE.update(state="idle", error=f"Couldn't check for updates: {e}", checked=time.time())
+            if pending:
+                UPDATE.update(state="ready", latest=pending["version"], checked=time.time())
+            else:
+                UPDATE.update(state="idle", error=f"Couldn't check for updates: {e}", checked=time.time())
+
+
+def download_update(version, asset):
+    with LOCK:
+        if UPDATE["state"] in ("downloading", "installing"):
+            return
+        UPDATE.update(state="downloading", progress=0.0, error="", latest=version)
+    try:
+        dest = DL_DIR / f"update-{version}-{asset['name']}"
+
+        def prog(done, total):
+            with LOCK:
+                UPDATE["progress"] = done / total if total else 0.0
+
+        download(asset["browser_download_url"], dest, prog)
+        if dest.stat().st_size != asset["size"]:
+            dest.unlink(missing_ok=True)
+            raise RuntimeError("Update download was incomplete. It will retry later.")
+        for old in DL_DIR.glob("update-*"):
+            if old != dest:
+                old.unlink(missing_ok=True)
+        PENDING_PATH.write_text(json.dumps({"version": version, "file": str(dest), "size": asset["size"]}))
+        with LOCK:
+            UPDATE.update(state="ready", progress=1.0)
+    except Exception as e:
+        with LOCK:
+            UPDATE.update(state="idle", error=f"Update download failed: {e}")
 
 
 def update_loop():
     time.sleep(5)
     while True:
         check_update()
-        time.sleep(6 * 3600)
+        time.sleep(3 * 3600)
 
 
-def quit_soon():
-    """Stop everything and exit so the new version can take over."""
+def install_pending(pending):
+    """Hand off to the installer and exit. The app reopens on the new version."""
+    with LOCK:
+        UPDATE["state"] = "installing"
+    f = Path(pending["file"])
+    if platform.system() == "Windows":
+        # wait for this app to fully close, then run the installer silently (it reopens the app)
+        cmd = f'ping -n 3 127.0.0.1 >nul & "{f}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS'
+        subprocess.Popen(["cmd", "/c", cmd], close_fds=True,
+                         creationflags=NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                         | getattr(subprocess, "DETACHED_PROCESS", 0))
+    elif platform.system() == "Darwin":
+        install_mac_update(f)
+        app = Path(sys.executable).resolve().parents[2]
+        subprocess.Popen(["/bin/sh", "-c", f"sleep 2; open {shlex.quote(str(app))}"], start_new_session=True)
+    else:
+        raise RuntimeError("Automatic updates aren't supported on this system")
+    PENDING_PATH.unlink(missing_ok=True)
+
+
+def restart_to_update():
+    pending = read_pending()
+    if not pending:
+        raise RuntimeError("No update is ready yet")
+    if not FROZEN:
+        raise RuntimeError("Updates only install in the packaged app")
+    install_pending(pending)
+
     def go():
         time.sleep(0.6)
         LLAMA.stop()
         RPC.stop()
         os._exit(0)
     threading.Thread(target=go, daemon=True).start()
-
-
-def apply_update():
-    with LOCK:
-        if UPDATE["state"] != "available":
-            return
-        UPDATE.update(state="downloading", progress=0.0, error="")
-    try:
-        if not FROZEN:
-            raise RuntimeError("Updates only work in the installed app. Download the new version from the website.")
-        name = update_file_name()
-        url = f"https://github.com/{UPDATE_REPO}/releases/download/v{UPDATE['latest']}/{name}"
-        dest = DL_DIR / name
-
-        def prog(done, total):
-            with LOCK:
-                UPDATE["progress"] = done / total if total else 0.0
-
-        download(url, dest, prog)
-        with LOCK:
-            UPDATE["state"] = "installing"
-        if platform.system() == "Windows":
-            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            subprocess.Popen([str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], creationflags=flags, close_fds=True)
-            quit_soon()
-        else:
-            install_mac_update(dest)
-    except Exception as e:
-        with LOCK:
-            UPDATE.update(state="available", error=str(e))
 
 
 def install_mac_update(dmg):
@@ -639,17 +698,29 @@ def install_mac_update(dmg):
         subprocess.run(["ditto", str(src), str(new)], check=True)
     finally:
         subprocess.run(["hdiutil", "detach", mnt, "-quiet"])
+    old = app.with_name(app.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    app.rename(old)
+    new.rename(app)
+    shutil.rmtree(old, ignore_errors=True)
+    subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(app)], capture_output=True)
+
+
+def install_on_launch():
+    """If an update was downloaded last time, install it now instead of opening the old version.
+    Returns True when the app should exit and let the new version open."""
+    if not FROZEN:
+        return False
+    pending = read_pending()
+    if not pending:
+        return False
     try:
-        old = app.with_name(app.name + ".old")
-        shutil.rmtree(old, ignore_errors=True)
-        app.rename(old)
-        new.rename(app)
-        shutil.rmtree(old, ignore_errors=True)
-    except PermissionError:
-        subprocess.Popen(["open", str(dmg)])
-        raise RuntimeError("No permission to replace the app. The new version is open: drag it into Applications.")
-    subprocess.Popen(["/bin/sh", "-c", f"sleep 2; open {shlex.quote(str(app))}"], start_new_session=True)
-    quit_soon()
+        install_pending(pending)
+        return True
+    except Exception as e:
+        print("Update failed, opening current version:", e)
+        PENDING_PATH.unlink(missing_ok=True)
+        return False
 
 
 # ------------------------------------------------------------------ models --
@@ -898,8 +969,8 @@ class Handler(BaseHTTPRequestHandler):
                 delete_chat(data.get("id"))
             elif self.path == "/api/update/check":
                 check_update()
-            elif self.path == "/api/update/install":
-                threading.Thread(target=apply_update, daemon=True).start()
+            elif self.path == "/api/update/restart":
+                restart_to_update()
             elif self.path == "/api/open-folder":
                 open_folder(HOME)
             elif self.path == "/api/chat":
@@ -972,6 +1043,9 @@ def main():
         # already running: just open another window onto it
         if not ARGS.headless:
             webbrowser.open(url) if ARGS.browser else open_window(url)
+        return
+    if install_on_launch():  # an update downloaded last time: install it and reopen
+        server.server_close()
         return
     server.daemon_threads = True
     refresh_engine()

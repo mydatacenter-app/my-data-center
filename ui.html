@@ -293,7 +293,7 @@ function render(){if(!S)return;const me=S.me,online=S.peers.filter(p=>p.online),
   document.querySelectorAll('#segMode button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.mode));
   setH($('sideStatus'),`<div class="row"><span class="led ${led}"></span><b class="${cls}">${label}</b></div><div class="faint" style="margin-top:4px">${S.cluster.model?esc(S.cluster.model.replace(/\.gguf$/,'')):'No model loaded'}</div>`);
   const u=S.update;
-  setH($('updBox'),u.state==='available'?`<div class="upd" onclick="go('settings')"><b>Update available</b>Version ${esc(u.latest)} · click to install</div>`:u.state==='downloading'||u.state==='installing'?`<div class="upd"><b>Updating…</b>${u.state==='installing'?'Reopening shortly':pct(u.progress)+'%'}</div>`:'');
+  setH($('updBox'),u.state==='ready'?`<div class="upd" onclick="restartUpdate()"><b>Restart to update</b>Version ${esc(u.latest)} is ready</div>`:u.state==='installing'?`<div class="upd"><b>Updating…</b>Reopening in a few seconds</div>`:'');
   if(page==='overview')renderOverview(me,online,sharing);
   if(page==='chat')renderChatHeader();
   if(page==='computers')renderComputers(me,online);
@@ -380,15 +380,16 @@ function renderSettings(me){
   else h=`<div class="row"><span class="grow small muted">One-time download (about 30–80 MB) of the llama.cpp engine.</span><button class="b pri" onclick="api('/api/engine/install')">Install engine</button></div>${e.error?`<div class="small err" style="margin-top:8px">${esc(e.error)}</div>`:''}`;
   setH($('engine'),h);$('homeDir').textContent=S.home;
   const u=S.update;let uh;
-  if(u.state==='available')uh=`<div class="row"><span class="led on"></span><b class="ok">Version ${esc(u.latest)} is available</b><span class="small muted">you have ${esc(S.app_version)}</span><span class="grow"></span><button class="b pri" onclick="doUpdate()">Update now</button></div>${u.error?`<div class="small err" style="margin-top:8px">${esc(u.error)}</div>`:''}`;
-  else if(u.state==='downloading')uh=`<div class="small">Downloading version ${esc(u.latest)}… ${pct(u.progress)}%</div><div class="bar" style="margin-top:8px"><i style="width:${pct(u.progress)}%"></i></div>`;
-  else if(u.state==='installing')uh=`<div class="small warn">Installing — the app will close and reopen by itself.</div>`;
+  if(u.state==='ready')uh=`<div class="row"><span class="led on"></span><b class="ok">Version ${esc(u.latest)} is downloaded and ready</b><span class="small muted">you have ${esc(S.app_version)}</span><span class="grow"></span><button class="b pri" onclick="restartUpdate()">Restart to update</button></div><div class="small faint" style="margin-top:6px">Or just close the app. It updates the next time you open it.</div>`;
+  else if(u.state==='downloading')uh=`<div class="small">Downloading version ${esc(u.latest)} in the background… ${pct(u.progress)}%</div><div class="bar" style="margin-top:8px"><i style="width:${pct(u.progress)}%"></i></div>`;
+  else if(u.state==='installing')uh=`<div class="small warn">Updating. The app will reopen by itself in a few seconds.</div>`;
+  else if(u.state==='available')uh=`<div class="row"><b class="ok">Version ${esc(u.latest)} is available</b><span class="grow"></span><span class="small muted">Download it from the website</span></div>`;
   else uh=`<div class="row"><span class="grow small ${u.error?'err':'muted'}">${u.error?esc(u.error):u.state==='current'?`You're up to date (version ${esc(S.app_version)}).`:'Checks automatically every few hours.'}</span><button class="b" onclick="api('/api/update/check').then(j=>j.ok&&toast('Checked for updates'))">Check now</button></div>`;
   setH($('updates'),uh+'<div class="small faint" style="margin-top:8px">Updating keeps your models, chats and settings. Update every computer so they stay on the same version.</div>');
   const lb=$('logBox'),atEnd=lb.scrollTop+lb.clientHeight>=lb.scrollHeight-6;lb.textContent=S.logs[logTab].join('\n')||'(nothing yet)';if(atEnd)lb.scrollTop=lb.scrollHeight;}
 
 /* ---------- actions ---------- */
-function doUpdate(){if(S.cluster.status!=='stopped'&&!confirm('Updating stops the running cluster. Continue?'))return;api('/api/update/install')}
+function restartUpdate(){if(S.cluster.status!=='stopped'&&!confirm('Restarting stops the running cluster. Update now?'))return;api('/api/update/restart')}
 function tog(id){sel.has(id)?sel.delete(id):sel.add(id);store('sel',[...sel]);render()}
 async function setMode(m){if(S&&m===S.mode)return;const j=await api('/api/mode',{mode:m});if(j.ok)toast(`${S.modes[m].label} mode on${j.restart_needed?' — restart the cluster to apply':''}`,'ok')}
 function dl(url){url=(url||'').trim();if(!url)return;$('customUrl').value='';api('/api/model/download',{url}).then(j=>j.ok&&toast('Download started','ok'))}
