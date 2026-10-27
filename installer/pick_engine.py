@@ -11,7 +11,7 @@ if os.environ.get("GITHUB_TOKEN"):
 req = urllib.request.Request("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30", headers=headers)
 releases = json.load(urllib.request.urlopen(req, timeout=60))
 for rel in releases:
-    if rel.get("draft") or rel.get("prerelease"):
+    if rel.get("draft"):  # llama.cpp marks every release as a pre-release, so those are fine
         continue
     names = [a["name"] for a in rel.get("assets", [])]
     tag = rel["tag_name"]
