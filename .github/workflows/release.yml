@@ -1,0 +1,119 @@
+# Every push to main builds the installers, publishes them as the latest release,
+# and updates the download page. Nobody has to touch Python or build anything.
+name: Build installers and publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APP_VERSION: 0.2.${{ github.run_number }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Stamp version
+        run: python installer/stamp_version.py
+      - name: Build app
+        shell: bash
+        run: pyinstaller --noconfirm --windowed --name "My Data Center" --icon assets/icon.ico --add-data "ui.html;." mydatacenter.py
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\windows.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/MyDataCenter-Setup.exe
+
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: AppleSilicon
+          - runner: macos-15-intel
+            arch: Intel
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.arch == 'Intel' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Stamp version
+        run: python installer/stamp_version.py
+      - name: Build app
+        run: |
+          pyinstaller --noconfirm --windowed --name "My Data Center" --icon assets/icon.icns \
+            --add-data "ui.html:." --osx-bundle-identifier com.mydatacenter.app mydatacenter.py
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "dist/My Data Center.app/Contents/Info.plist"
+          codesign --force --deep --sign - "dist/My Data Center.app"
+      - name: Build disk image
+        run: |
+          mkdir dmg
+          cp -R "dist/My Data Center.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "My Data Center" -srcfolder dmg -ov -format UDZO "MyDataCenter-Mac-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: MyDataCenter-Mac-${{ matrix.arch }}.dmg
+
+  release:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: My Data Center ${{ env.APP_VERSION }}
+          make_latest: true
+          files: out/*
+          body: |
+            Download page: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+            - **Windows:** MyDataCenter-Setup.exe
+            - **Mac (M1/M2/M3/M4):** MyDataCenter-Mac-AppleSilicon.dmg
+            - **Mac (Intel):** MyDataCenter-Mac-Intel.dmg
+
+  pages:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fill in download links
+        run: |
+          sed -i "s#__REPO__#${{ github.repository }}#g; s#__VERSION__#${APP_VERSION}#g" site/index.html
+          cp assets/icon.png site/icon.png
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
